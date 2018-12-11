@@ -7,6 +7,25 @@ import (
 	"gx/ipfs/QmcTzQXRcU2vf8yX5EEboz1BSvWC7wWmeYAKVQmhp8WZYU/sha256-simd" 
 )
 
+
+func allTipSets(blks []*Block) map[string][]*Block {
+	tipsets := make(map[string][]*Block)
+	for i, blk1 := range blks {
+		var tipset []*Block{blk1}
+		for j, blk2 := range blks {
+			if i != j {
+				if stringifyTipSet(blk1.Parents) == stringifyTipSet(blk2.Parents) {
+					tipset = append(tipset, blk2)
+				}
+			}
+		}
+		key := stringifyTipSet(tipset)
+		if _, seen := tipsets[key]; !seen {
+			tipsets[key] = tipset
+		}
+	}
+}
+
 var totalMiners int
 const bigOlNum 100000
 
@@ -96,8 +115,6 @@ func (m *RationalMiner) generateTicket(minTicket int) int64 {
 	return ticket
 }
 
-// MaybeTrimForks purges the private fork slice of 
-
 // Mine outputs the block that a miner mines in a round where the leaves of
 // the block tree are given by liveHeads.  A miner will only ever mine one
 // block in a round because if it mines two or more it gets slashed.  #Incentives #Blockchain
@@ -129,7 +146,6 @@ func main() {
 		Null: false,
 		Weight: 0,
 	}
-	liveHeads := [][]*Block{[]*Block{gen}}
 	roundNum := 1000
 	totalMiners = 30
 	miners := make([]*RationalMiner, totalMiners)
