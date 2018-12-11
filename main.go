@@ -11,24 +11,24 @@ import (
 
 // Input a set of newly mined blocks, return a map grouping these blocks
 // into tipsets that obey the tipset invariants.
-func allTipSets(blks []*Block) map[string][]*Block {
-	tipsets := make(map[string][]*Block)
-	for i, blk1 := range blks {
-		var tipset []*Block{blk1}
-		for j, blk2 := range blks {
-			if i != j {
-				if stringifyTipset(blk1.Parents) == stringifyTipset(blk2.Parents) &&
-					blk1.Height == blk2.Height {
-					tipset = append(tipset, blk2)
-				}
-			}
-		}
-		key := stringifyTipset(tipset)
-		if _, seen := tipsets[key]; !seen {
-			tipsets[key] = tipset
-		}
-	}
-	return tipsets
+func allTipsets(blks []*Block) map[string][]*Block {
+        tipsets := make(map[string][]*Block)
+        for i, blk1 := range blks {
+                tipset := []*Block{blk1}
+                for j, blk2 := range blks {
+                        if i != j {
+                                if stringifyTipset(blk1.Parents) == stringifyTipset(blk2.Parents) &&
+                                        blk1.Height == blk2.Height {
+                                        tipset = append(tipset, blk2)
+                                }
+                        }
+                }
+                key := stringifyTipset(tipset)
+                if _, seen := tipsets[key]; !seen {
+                        tipsets[key] = tipset
+                }
+        }
+        return tipsets
 }
 
 // forkTipsets returns the n subsets of a tipset of length n: for every ticket
@@ -36,11 +36,16 @@ func allTipSets(blks []*Block) map[string][]*Block {
 // containing a ticket larger than it.  This is a rational miner trying to mine
 // all possible non-slashable forks off of a tipset.
 func forkTipsets(blks []*Block) [][]*Block {
-	sort.Slice(blks, func(i, j int) { return blks[i].Ticket < blks[j].Ticket })
-	var forks [][]*Block
-	for i := range blks {
-		forks = append(
-	}
+        sort.Slice(blks, func(i, j int) bool { return blks[i].Seed < blks[j].Seed })
+        var forks [][]*Block
+        for i := range blks {
+            currentFork := []*Block{blks[i]}
+                    for j := i + 1; j < len(blks); j++ {
+                            currentFork = append(currentFork, blks[j])
+                    }
+                    forks = append(forks, currentFork)
+        }
+        return forks
 }
 
 var totalMiners int
@@ -158,8 +163,14 @@ func (m *RationalMiner) generateTicket(minTicket int64) int64 {
 }
 
 func (m *RationalMiner) SourceAllForks(newBlocks []*Block) {
-        // TODO: split the newblocks into all potential forkable tipsets
-        m.PrivateForks[stringifyTipset(newBlocks)] = newBlocks
+        // split the newblocks into all potential forkable tipsets
+        allTipsets := allTipsets(newBlocks)
+        for k := range allTipsets {
+                forkTipsets := forkTipsets(allTipsets[k])
+                for _, ts := range forkTipsets {
+                        m.PrivateForks[stringifyTipset(ts)] = ts
+                }
+        }
 }
 
 // Mine outputs the block that a miner mines in a round where the leaves of
@@ -230,5 +241,6 @@ func main() {
 
                 // NewBlocks added to network
                 blocks = newBlocks
+                fmt.Printf("Round %d -- %d new blocks\n", round, len(newBlocks))
         }
 }
