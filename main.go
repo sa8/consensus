@@ -1,152 +1,200 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
-	"math/rand"
-	"gx/ipfs/QmcTzQXRcU2vf8yX5EEboz1BSvWC7wWmeYAKVQmhp8WZYU/sha256-simd" 
+        "encoding/json"
+        "fmt"
+        "math/rand"
+        "gx/ipfs/QmcTzQXRcU2vf8yX5EEboz1BSvWC7wWmeYAKVQmhp8WZYU/sha256-simd" 
+        "sort"
+        "time"
 )
 
 var totalMiners int
-const bigOlNum 100000
+const bigOlNum = 100000
 
 type Block struct {
-	Nonce int64
-	Parents []*Block
-	Owner int
-	Height int
-	Null bool
-	Weight int
-	Seed int64
+        Parents []*Block
+        Owner int
+        Height int
+        Null bool
+        Weight int
+        Seed int64
 }
 
 // Hash returns the hash of this block
 func (b *Block) Hash() [32]byte {
-	if b.hash == [32]byte{} {
-		d, _ := json.Marshal(b)
-		h := sha256.Sum256(d)
-		b.hash = h
-	}
+        d, _ := json.Marshal(b)
+        return sha256.Sum256(d)
+}
 
-	return b.hash
+func stringifyTipset(blocks []*Block) string {
+    var blockStrings []string
+    for _, block := range blocks {
+        h := block.Hash()
+        blockStrings = append(blockStrings, string(h[:]))
+    }
+    sort.Strings(blockStrings)
+
+    var str string
+    for _, strBlock := range blockStrings {
+        str += strBlock
+    }
+    return str
 }
 
 func (b *Block) ShortName() string {
-	h := b.Hash()
-	return fmt.Sprintf("%x", h[:8])
+        h := b.Hash()
+        return fmt.Sprintf("%x", h[:8])
 }
 
 type RationalMiner struct {
-	Power float64
-	PrivateForks map[[32]byte][]*Block
-	ID int
+        Power float64
+        PrivateForks map[string][]*Block
+        ID int
 }
 
 func NewRationalMiner(id int, power float64) *RationalMiner {
-	return &RationalMiner{
-		Power: power,
-		PrivateForks: make(map[[32]byte][]*Block, 0),
-		ID: id,
-	}
+        return &RationalMiner{
+                Power: power,
+                PrivateForks: make(map[string][]*Block, 0),
+                ID: id,
+        }
 }
 
-func parentHeight(parents []*Block) {
-	if len(parents) == 0 {
-		panic("Don't call height on no parents")
-	}
-	return parents[0].Height
+func parentHeight(parents []*Block) int {
+        if len(parents) == 0 {
+                panic("Don't call height on no parents")
+        }
+        return parents[0].Height
 }
 
-func parentWeight(parents []*Block) {
-	if len(parents) == 0 {
-		panic("Don't call weight on no parents")
-	}
-	return len(parents) + parents[0].Weight - 1
+func parentWeight(parents []*Block) int {
+        if len(parents) == 0 {
+                panic("Don't call weight on no parents")
+        }
+        return len(parents) + parents[0].Weight - 1
 }
 
-// maybeGenerateBlock maybe makes a new block with the given parents
+func retrieveSeed(parents []*Block) int64 {
+        // get minTicket from tipset
+        minTicket := int64(-1)
+        for _, block := range parents {
+                if minTicket == int64(-1) || block.Seed < minTicket {
+                        minTicket = block.Seed
+                }
+        }
+        return minTicket
+}
+
+// generateBlock makes a new block with the given parents
 func (m *RationalMiner) generateBlock(parents []*Block) *Block {
-	// Given parents and id we have a unique source for new ticket
-	t := m.generateTicket(minTicket)
-	nextBlock := Block{
-		Nonce: getUniqueID()
-		Parents: parents,
-		Owner: m.ID,
-		Height: parentHeight(parents) + 1,
-		Weight: parentWeight(parents),
-		Seed: t,
-	}
-	
-	if isWinningTicket(t) {
-		nextBlock.Null = false
-		nextBlock.Weight += 1
-	} else {
-		nextBlock.Null = true
-		// TODO: update private forks		
-	}
+        // Given parents and id we have a unique source for new ticket
+        minTicket := retrieveSeed(parents)
+        t := m.generateTicket(minTicket)
+        nextBlock := &Block {
+                Parents: parents,
+                Owner: m.ID,
+                Height: parentHeight(parents) + 1,
+                Weight: parentWeight(parents),
+                Seed: t,
+        }
+        
+        if isWinningTicket(t, m.Power) {
+                nextBlock.Null = false
+                nextBlock.Weight += 1
+        } else {
+                nextBlock.Null = true
+        }
 
-	return nextBlock
+        return nextBlock
+}
+
+func isWinningTicket(ticket int64, power float64) bool {
+    // this is a simulation of ticket checking: the ticket is drawn uniformly from 0 to bigOlNum * totalMiners.
+    // If it is smaller than that * the miner's power (between 0 and 1), it wins.
+    return float64(ticket) < float64(bigOlNum) * float64(totalMiners) * power
 }
 
 // generateTicket
-func (m *RationalMiner) generateTicket(minTicket int) int64 {
-	seed := minTicket + m.ID
-	r := rand.New(rand.NewSource(seed))
-	ticket := rand.Int63n(int64(bigOlNum * totalMiners))
-	return ticket
+func (m *RationalMiner) generateTicket(minTicket int64) int64 {
+        seed := minTicket + int64(m.ID)
+        r := rand.New(rand.NewSource(seed))
+        ticket := r.Int63n(int64(bigOlNum * totalMiners))
+        return ticket
 }
 
-// MaybeTrimForks purges the private fork slice of 
+func (m *RationalMiner) SourceAllForks(newBlocks []*Block) {
+        // TODO: split the newblocks into all potential forkable tipsets
+        m.PrivateForks[stringifyTipset(newBlocks)] = newBlocks
+}
 
 // Mine outputs the block that a miner mines in a round where the leaves of
-// the block tree are given by liveHeads.  A miner will only ever mine one
+// the block tree are given by newBlocks.  A miner will only ever mine one
 // block in a round because if it mines two or more it gets slashed.  #Incentives #Blockchain
-func (m *RationalMiner) Mine(liveHeads []*Block) *Block {
-	m.SourceAllForks(liveHeads)
-	
-	maxWeight := 0
-	var bestBlock *Block
-	for i := 0; i <= len(m.PrivateForks); i++ {
-		blk := generateBlock(parents)
-		if !blk.Null && blk.Weight > maxWeight {
-			bestBlock = blk
-			maxWeight = weight
-		}
-	}
-	// Get rid of private forks that we could not release without slashing.
-	// Only occurs if a block is found.
-	m.MaybeTrimForks(bestBlock)
-	return bestBlock
+func (m *RationalMiner) Mine(newBlocks []*Block) *Block {
+        // Start by combining existing pforks and new blocks available to mine atop of
+        m.SourceAllForks(newBlocks)
+
+        var nullBlocks []*Block
+        maxWeight := 0
+        var bestBlock *Block
+        for k := range m.PrivateForks {
+                // generateBlock takes in a blocks parent's, as in current head of PrivateForks
+                blk := m.generateBlock(m.PrivateForks[k])
+                if !blk.Null && blk.Weight > maxWeight {
+                        bestBlock = blk
+                        maxWeight = blk.Weight
+                } else if blk.Null && bestBlock == nil {
+                    // if blk is null and we haven't found a winning block yet
+                    // we will want to extend private forks with it
+                    // no need to do it if blk is not null since the pforks will get deleted anyways
+                    nullBlocks = append(nullBlocks, blk)
+                }
+        }
+
+
+        // if bestBlock is not null
+        if bestBlock != nil {
+            // kill all pforks
+            m.PrivateForks = make(map[string][]*Block)
+        } else {
+            // extend null block chain
+            for _, nblk := range nullBlocks {
+                    delete(m.PrivateForks, stringifyTipset(nblk.Parents))
+                    // add the new null block to our private forks
+                    m.PrivateForks[stringifyTipset([]*Block{nblk})] = []*Block{nblk}
+            }
+        }
+        return bestBlock
 }
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
-	gen := &Block{
-		Nonce: getUniqueID(),
-		Parents: nil,
-		Owner: -1,
-		Height: 0,
-		Null: false,
-		Weight: 0,
-	}
-	liveHeads := [][]*Block{[]*Block{gen}}
-	roundNum := 1000
-	totalMiners = 30
-	miners := make([]*RationalMiner, totalMiners)
-	for m := 0; m < totalMiners; m++ {
-		miners[m] = NewRationalMiner(m, 1.0/totalMiners)
-	}
-	for round := 0; round < roundNum; round++ {
-		var newBlocks []*Block
-		for m := 0; m < totalMiners; m++ {
-			// Each miner mines
-			blk := Mine(liveHeads)
-			if blk != nil {
-				newBlocks = append(newBlocks, blk)
-			}
-		}
+        rand.Seed(time.Now().UnixNano())
+        gen := &Block{
+                Parents: nil,
+                Owner: -1,
+                Height: 0,
+                Null: false,
+                Weight: 0,
+        }
+        roundNum := 1000
+        totalMiners = 30
+        miners := make([]*RationalMiner, totalMiners)
+        for m := 0; m < totalMiners; m++ {
+                miners[m] = NewRationalMiner(m, 1.0/float64(totalMiners))
+        }
+        blocks := []*Block{gen}
+        for round := 0; round < roundNum; round++ {
+                var newBlocks = []*Block{}
+                for _, m := range miners {
+                        // Each miner mines
+                        blk := m.Mine(blocks)
+                        if blk != nil {
+                                newBlocks = append(newBlocks, blk)
+                        }
+                }
 
-		// Network updates forks
-		liveHeads = mergeNewBlocks(liveHeads, newBlocks)
-	}
+                // NewBlocks added to network
+                blocks = newBlocks
+        }
 }
