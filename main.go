@@ -4,7 +4,7 @@ import (
 	"runtime/pprof"
 	"strconv"
 	"flag"
-//        "fmt"
+        "fmt"
         "math/rand"
 	"os"
         "sort"
@@ -13,6 +13,7 @@ import (
 
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 var uniqueID int
+var lbp int
 
 func getUniqueID() int {
 	uniqueID += 1
@@ -99,29 +100,46 @@ func NewRationalMiner(id int, power float64) *RationalMiner {
         }
 }
 
-func parentHeight(parents []*Block) int {
-        if len(parents) == 0 {
-                panic("Don't call height on no parents")
-        }
-        return parents[0].Height
+func blocksParents(blocks []*Block) []*Block {
+	if len(blocks) == 0 {
+		panic("Don't call parents on nil blocks")
+	}
+	return blocks[0].Parents
 }
 
-func parentWeight(parents []*Block) int {
-        if len(parents) == 0 {
-                panic("Don't call weight on no parents")
+func blocksHeight(blocks []*Block) int {
+        if len(blocks) == 0 {
+                panic("Don't call height on nil blocks")
         }
-        return len(parents) + parents[0].Weight - 1
+        return blocks[0].Height
+}
+
+func blocksWeight(blocks []*Block) int {
+        if len(blocks) == 0 {
+                panic("Don't call weight on nil blocks")
+        }
+        return len(blocks) + blocks[0].Weight - 1
+}
+
+// Input the base tipset for mining lookbackTipset will return the ancestor
+// tipset that should be used for sampling the leader election seed.
+func lookbackTipset(blocks []*Block) []*Block {
+	for i := 0; i < lbp - 1; i++ {
+		blocks = blocksParents(blocks)
+	}
+	return blocks
 }
 
 func retrieveSeed(parents []*Block) int64 {
-        // get minTicket from tipset
-        minTicket := int64(-1)
-        for _, block := range parents {
-                if minTicket == int64(-1) || block.Seed < minTicket {
-                        minTicket = block.Seed
+        // get minTicket from lbp tipset
+	lbpAncestor := lookbackTipset(parents)
+	minSeed := int64(-1)
+        for _, block := range lbpAncestor {
+                if minSeed == int64(-1) || block.Seed < minSeed {
+                        minSeed = block.Seed
                 }
         }
-        return minTicket
+        return minSeed
 }
 
 // generateBlock makes a new block with the given parents
@@ -133,8 +151,8 @@ func (m *RationalMiner) generateBlock(parents []*Block) *Block {
 		Nonce: getUniqueID(),
                 Parents: parents,
                 Owner: m.ID,
-                Height: parentHeight(parents) + 1,
-                Weight: parentWeight(parents),
+                Height: blocksHeight(parents) + 1,
+                Weight: blocksWeight(parents),
                 Seed: t,
         }
         
@@ -183,7 +201,7 @@ func (m *RationalMiner) Mine(newBlocks []*Block) *Block {
         var nullBlocks []*Block
         maxWeight := 0
         var bestBlock *Block
-//	fmt.Printf("miner %d.  len priv forks: %d\n", m.ID, len(m.PrivateForks))
+	fmt.Printf("miner %d.  len priv forks: %d\n", m.ID, len(m.PrivateForks))
         for k := range m.PrivateForks {
                 // generateBlock takes in a blocks parent's, as in current head of PrivateForks
                 blk := m.generateBlock(m.PrivateForks[k])
@@ -214,6 +232,24 @@ func (m *RationalMiner) Mine(newBlocks []*Block) *Block {
         return bestBlock
 }
 
+// makeGen makes the genesis block.  In the case the lbp is more than 1 it also
+// makes lbp -1 genesis ancestors for sampling the first lbp - 1 blocks after genesis
+func makeGen() *Block {
+	var gen *Block
+	for i := 0; i < lbp; i++ {
+		gen = &Block{
+			Nonce: getUniqueID(),
+			Parents: []*Block{gen},
+			Owner: -1,
+			Height: 9,
+			Null: false,
+			Weight: 0,
+			Seed: rand.Int63n(int64(bigOlNum * totalMiners)),
+		}			
+	}
+	return gen
+}
+
 func main() {
 	flag.Parse()
 	if *cpuprofile != "" {
@@ -226,25 +262,19 @@ func main() {
 	}
 	uniqueID = 0
         rand.Seed(time.Now().UnixNano())
-        gen := &Block{
-		Nonce: getUniqueID(),
-                Parents: nil,
-                Owner: -1,
-                Height: 0,
-                Null: false,
-                Weight: 0,
-        }
-        roundNum := 1000
-        totalMiners = 30
+        roundNum := 100
+        totalMiners = 1000
+	lbp = 100
         miners := make([]*RationalMiner, totalMiners)
+	gen := makeGen()
         for m := 0; m < totalMiners; m++ {
                 miners[m] = NewRationalMiner(m, 1.0/float64(totalMiners))
         }
         blocks := []*Block{gen}
         for round := 0; round < roundNum; round++ {
-//		fmt.Printf("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n")
-//		fmt.Printf("Round %d -- %d new blocks\n", round, len(blocks))
-//		fmt.Printf("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n")		
+		fmt.Printf("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n")
+		fmt.Printf("Round %d -- %d new blocks\n", round, len(blocks))
+		fmt.Printf("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n")		
                 var newBlocks = []*Block{}
                 for _, m := range miners {
                         // Each miner mines
