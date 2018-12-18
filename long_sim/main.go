@@ -10,11 +10,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 var suite bool
+var test bool
 
 var uniqueID int
 
@@ -22,6 +24,12 @@ const bigOlNum = 100000
 
 func printSingle(content string) {
 	if !suite {
+		fmt.Printf(content)
+	}
+}
+
+func printNonTest(content string) {
+	if !test {
 		fmt.Printf(content)
 	}
 }
@@ -375,7 +383,7 @@ func averageLiveForksPerRound(ct *chainTracker) float64 {
 	return float64(sum) / float64(ct.maxHeight+1)
 }
 
-func analyzeSim(cts []*chainTracker, lbp int) {
+func analyzeSim(cts []*chainTracker) float64 {
 	// run analysis on the chains here
 
 	// 1. average num of live forks
@@ -385,10 +393,11 @@ func analyzeSim(cts []*chainTracker, lbp int) {
 		// for each chain
 		sum += averageLiveForksPerRound(cts[n])
 	}
-	fmt.Printf("%.2f average forks per round across %d chains with lbp %d", sum/float64(len(cts)), len(cts), lbp)
+
+	return sum / float64(len(cts))
 }
 
-func runSim(totalMiners int, roundNum int, lbp int, c chan *chainTracker) {
+func runSingleSim(totalMiners int, roundNum int, lbp int, c chan *chainTracker) {
 	uniqueID = 0
 	rand.Seed(time.Now().UnixNano())
 	chainTracker := NewChainTracker()
@@ -444,22 +453,84 @@ func runSim(totalMiners int, roundNum int, lbp int, c chan *chainTracker) {
 	c <- chainTracker
 }
 
+func run(trials int, lbp int, roundNum int, totalMiners int) []*chainTracker {
+
+	if trials <= 0 {
+		panic("None of your assumptions have been proven wrong")
+	}
+	suite = trials > 1
+	var cts []*chainTracker
+	c := make(chan *chainTracker, trials)
+
+	for n := 0; n < trials; n++ {
+		printNonTest(fmt.Sprintf("Trial %d\n-*-*-*-*-*-*-*-*-*-*-\n", n))
+		go runSingleSim(totalMiners, roundNum, lbp, c)
+	}
+	for n := 0; n < trials; n++ {
+		cts = append(cts, <-c)
+	}
+
+	if trials == 1 {
+		printNonTest(fmt.Sprintf("Sim produced %d blocks\n", len(cts[0].blocks)))
+		drawChain(cts[0])
+	} else {
+		printNonTest(fmt.Sprintf("%d trials run\n", len(cts)))
+		avg := analyzeSim(cts)
+		printNonTest(fmt.Sprintf("%.2f average forks per round across %d chains with lbp %d", avg, len(cts), lbp))
+	}
+
+	return cts
+}
+
+func runAndAnalyze(trials int, lbp int, roundNum int, totalMiners int, results map[int]map[int]float64, wg sync.WaitGroup) {
+	defer wg.Done()
+	cts := run(trials, lbp, roundNum, totalMiners)
+	results[totalMiners][lbp] = analyzeSim(cts)
+}
+
+func runTests() {
+	// x is lbps, y is number of forks at any height for different numbers of miners
+	// map num of miners to map of lbp to average num of forks for that lbp
+	results := make(map[int]map[int]float64)
+	numMiners := []int{10, 100} //, 1000}
+	maxLBP := 150
+	numRounds := 300
+	numTrials := 20
+	lbps := []int{1}
+	for lbp := 10; lbp <= maxLBP; lbp += 30 {
+		lbps = append(lbps, lbp)
+	}
+
+	fmt.Printf("Starting %d different sims run %d times each... (can take a long time)\n", len(lbps)*len(numMiners), numTrials)
+	var wgSims sync.WaitGroup
+	for _, numM := range numMiners {
+		fmt.Printf("\n%d Miners:", numM)
+		results[numM] = make(map[int]float64)
+		for _, lbp := range lbps {
+			fmt.Printf("\tLBP: %d", lbp)
+			wgSims.Add(1)
+			go runAndAnalyze(numTrials, lbp, numRounds, numM, results, wgSims)
+		}
+	}
+	wgSims.Wait()
+
+	fmt.Printf("we have %d miners, %d lbps per miner, and one is %.2f", len(results), len(results[10]), results[10][1])
+}
+
 func main() {
 
 	fLbp := flag.Int("lbp", 1, "sim lookback")
 	fRoundNum := flag.Int("rounds", 100, "number of rounds to sim")
 	fTotalMiners := flag.Int("miners", 10, "number of miners to sim")
 	fNumTrials := flag.Int("trials", 1, "number of trials to run")
+	fTest := flag.Bool("test", false, "run automated tests")
 
 	flag.Parse()
 	lbp := *fLbp
 	roundNum := *fRoundNum
 	totalMiners := *fTotalMiners
 	trials := *fNumTrials
-
-	if trials <= 0 {
-		panic("None of your assumptions have been proven wrong")
-	}
+	test = *fTest
 
 	if *cpuprofile != "" {
 		f, err := os.Create(*cpuprofile)
@@ -470,27 +541,9 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
-	suite = trials > 1
-	var cts []*chainTracker
-	c := make(chan *chainTracker, trials)
-	for n := 0; n < trials; n++ {
-		fmt.Printf("Trial %d\n", n)
-		fmt.Printf("-*-*-*-*-*-*-*-*-*-*-\n")
-		go runSim(totalMiners, roundNum, lbp, c)
-	}
-	for i := range c {
-		cts = append(cts, i)
-		if len(cts) == trials {
-			// TODO: fix this
-			close(c)
-		}
-	}
-
-	if trials == 1 {
-		fmt.Printf("Sim produced %d blocks\n", len(cts[0].blocks))
-		drawChain(cts[0])
+	if test {
+		runTests()
 	} else {
-		fmt.Printf("%d trials run\n", len(cts))
-		analyzeSim(cts, lbp)
+		run(trials, lbp, roundNum, totalMiners)
 	}
 }
