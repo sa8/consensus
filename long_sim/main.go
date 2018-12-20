@@ -493,9 +493,9 @@ func runTests() {
 	// map num of miners to map of lbp to average num of forks for that lbp
 	results := make(map[int]map[int]float64)
 	numMiners := []int{10, 100} //, 1000}
-	maxLBP := 150
-	numRounds := 300
-	numTrials := 20
+	maxLBP := 20 //300
+	numRounds := 100 //500
+	numTrials := 20 //30
 	lbps := []int{1}
 	for lbp := 10; lbp <= maxLBP; lbp += 30 {
 		lbps = append(lbps, lbp)
